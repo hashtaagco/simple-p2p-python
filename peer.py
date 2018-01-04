@@ -12,7 +12,7 @@ BS_HOST = "localhost"
 BS_PORT = 8007
 VERSION = "1.0.0"
 generate_uuid = lambda: uuid4()
-
+# 123x
 def log( m, level="log"):
     delimiters = {
         "log" : "[~]",
