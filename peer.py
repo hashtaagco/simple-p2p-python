@@ -6,7 +6,7 @@ import json
 from uuid import uuid4
 
 
-SERVER_PORT = 8007
+SERVER_PORT = 8009
 
 BS_HOST = "localhost"
 BS_PORT = 8007
@@ -26,10 +26,13 @@ def log( m, level="log"):
 class MyPeerServer(LineReceiver):
     remoteNodeId = None
     remotePeer = None
+    remoteHost = None
+    remotePort = None
     localPeer = None
     status = 0
     peerType = None
-    def __init__(self, factory=None, peerType="LISTENER"):
+    def __init__(self, factory=None, peerType="CLIENT"):
+        log('Creating peer type ' + peerType)
         self.factory = factory
         self.peerType = peerType
 
@@ -37,6 +40,7 @@ class MyPeerServer(LineReceiver):
         log( "Connection from " + str(self.transport.getPeer()) , "info")
         self.remotePeer = self.transport.getPeer()
         self.localPeer = self.transport.getHost()
+
         # self.transport.write("Welcome! There are currently %d open connections.\n" %(len(self.factory.peers),))
         # self.transport.write(json.dumps({  '_v' : VERSION, 'type': 'hello', 'total_peers' : len(self.factory.peers) }))
         # self.send_handshakeRequest()
@@ -60,26 +64,32 @@ class MyPeerServer(LineReceiver):
             pass
         except ValueError as e:
             m = 'Invalid data format, expected json format'
+            # print line
             log( m , "error")
             log("Disconnecting " + str(self.remotePeer), "error")
             self.transport.abortConnection()
+            raise e
 
     def handle_handshake(self, data):
         log("Verifing handshake response from peer " + str(self.remotePeer) , "info")
+        # print data
         if data['nodeId'] == self.factory.nodeId:
             log("Connected to self! OOPS!", "error")
         elif data['nodeId'] in self.factory.peers:
             log("Peer already connected")
         else:
-            log("Peer connection with " + str(self.remotePeer) + ' is successful')
             self.remoteNodeId = data['nodeId']
+            self.remoteHost = data['host']
+            self.remotePort = data['port']
             self.factory.peers[data['nodeId']] = self
+            log("Peer connection with " + str(self.remotePeer) + ' is successful')
+            # print self.factory.peers
         self.send_peers(self.factory.peers)
 
     def send_peers(self, peers):
         response = {}
         for i in peers:
-            response[peers[i].remoteNodeId] = { "location" : str(peers[i].remotePeer.host) + ":" + str(peers[i].remotePeer.port) , "type" : self.peerType }
+            response[peers[i].remoteNodeId] = { "location" : str(peers[i].remoteHost) + ":" + str(peers[i].remotePort) , "type" : self.peerType }
         log("Sending peers to all node " + str(self.remotePeer))
         for i in peers:
             peers[i].sendLine(json.dumps({'_v' : VERSION,  'type' : 'res_peers', 'peers' :  response }))
@@ -87,20 +97,23 @@ class MyPeerServer(LineReceiver):
 
     def handle_peers(self, data):
         log("Recieved peers from node " + str(self.remotePeer) + " - Total : " + str(len(data['peers'])))
-        for node in data['peers']:
-            log("Trying to connect to node - " + node)
+        # print data['peers']
+        for node, info in data['peers'].iteritems():
+            log("Trying to connect to node - " + node )
+
             if(node == self.factory.nodeId):
                 log("That's me in the recieved peer list - IGNORING", "warning")
-                return
+                continue
             if(node in self.factory.peers):
                 log("Already connected to this node - IGNORING", "warning")
-                return
-            if node != "SPEAKER":
+                continue
+            if info['type'] != "SERVER":
                 log("That node is a "+ data['peers'][node]['type'] +" - IGNORING", "warning");
-                return
-            host, port = data['peers'][node]['location']
-            point = TCP4ClientEndpoint(reactor, host, int(port), "SPEAKER")
-            d = connectProtocol(point, NCProtocol(self.factory))
+                continue
+            location = info['location']
+            host, port = location.split(":")
+            point = TCP4ClientEndpoint(reactor, host, int(port))
+            d = connectProtocol(point, MyPeerServer(self.factory))
             d.addCallback(gotProtocol)
 
 
@@ -109,7 +122,7 @@ class MyPeerServer(LineReceiver):
         self.sendLine(json.dumps({ '_v' : VERSION,  'type' : 'req_handshake', 'nodeId' : self.factory.nodeId }))
     def send_handshakeResponse(self,data=None):
         log ("Recieved handshake request from peer " + str(self.remotePeer) , "info")
-        self.sendLine(json.dumps({ '_v' : VERSION,  'type' : 'res_handshake', 'nodeId' : self.factory.nodeId }))        
+        self.sendLine(json.dumps({ '_v' : VERSION,  'type' : 'res_handshake', 'nodeId' : self.factory.nodeId, 'host' : self.localPeer.host, 'port' : SERVER_PORT }))        
 
 
 class MyPeerFactory(Factory):
@@ -117,7 +130,7 @@ class MyPeerFactory(Factory):
     log('Your node id is ' + nodeId)
     peers = {}
     def buildProtocol(self, addr):
-        return MyPeerServer(self, "LISTENER")
+        return MyPeerServer(self, "SERVER")
 
 
 endpoint = TCP4ServerEndpoint(reactor, SERVER_PORT)
@@ -130,7 +143,8 @@ def gotProtocol(p):
 
 log("Bootstrapping network")
 point = TCP4ClientEndpoint(reactor, BS_HOST, BS_PORT)
-d = connectProtocol(point, MyPeerServer(factory, "SPEAKER"))
+d = connectProtocol(point, MyPeerServer(factory))
 d.addCallback(gotProtocol)
-
+# print endpoint
 reactor.run()
+
